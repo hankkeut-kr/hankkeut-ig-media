@@ -1,0 +1,30 @@
+name: 인스타 예약 게시
+on:
+  schedule:
+    # 15분마다(정각은 GitHub 이 붐벼서 피한다). 시각은 UTC 기준이지만 게시물 시각은 따로 저장돼 있어 상관없다.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: ig-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 시각이 된 게시물 올리기
+        run: node publisher/publish.mjs
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+      - name: 결과 저장
+        run: |
+          git config user.name "hankkeut-bot"
+          git config user.email "hankkeut-bot@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || (git commit -m "게시 결과" && git pull --rebase && git push)
