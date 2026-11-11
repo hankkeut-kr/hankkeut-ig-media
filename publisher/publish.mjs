@@ -6,6 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const TOKEN = (process.env.IG_ACCESS_TOKEN || "").trim();
+const TH_TOKEN = (process.env.THREADS_ACCESS_TOKEN || "").trim();
+const TH = "https://graph.threads.net/v1.0";
 const REPO = process.env.GITHUB_REPOSITORY;
 const G = "https://graph.facebook.com";
 const LATE_MS = 12 * 3600_000; // 12시간 넘게 늦으면 올리지 않는다(엉뚱한 때 올라가지 않게)
@@ -63,7 +65,40 @@ async function publish(item) {
   return { status: "published", mediaId: pub.id, permalink };
 }
 
+// ── 쓰레드: 컨테이너 만들기 → 준비될 때까지 기다리기 → 게시
+async function thCall(method, endpoint, params = {}) {
+  const qs = new URLSearchParams({ ...params, access_token: TH_TOKEN });
+  const res = await fetch(method === "GET" ? `${TH}/${endpoint}?${qs}` : `${TH}/${endpoint}`, {
+    method,
+    headers: method === "POST" ? { "Content-Type": "application/x-www-form-urlencoded" } : undefined,
+    body: method === "POST" ? qs.toString() : undefined,
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.error) throw new Error(`Threads ${res.status}: ${j.error?.message || "unknown"}`);
+  return j;
+}
+
+async function publishThreads(item) {
+  const params = item.image ? { media_type: "IMAGE", image_url: raw(item.image), text: item.text } : { media_type: "TEXT", text: item.text };
+  const c = await thCall("POST", "me/threads", params);
+  for (let i = 0; i < 30; i++) {
+    const r = await thCall("GET", c.id, { fields: "status,error_message" });
+    if (r.status === "FINISHED") break;
+    if (r.status === "ERROR" || r.status === "EXPIRED") throw new Error(`container ${r.status} ${r.error_message || ""}`);
+    await sleep(3000);
+  }
+  if (item.practice) return { status: "practice-ok" };
+  const pub = await thCall("POST", "me/threads_publish", { creation_id: c.id });
+  let permalink;
+  try {
+    permalink = (await thCall("GET", pub.id, { fields: "permalink" })).permalink;
+  } catch {}
+  return { status: "published", mediaId: pub.id, permalink };
+}
+
 function friendly(m) {
+  if (/^Threads/.test(m) && /expired|session|OAuth|token/i.test(m)) return "쓰레드 열쇠가 만료됐거나 GitHub 비밀 칸에 없습니다";
+  if (/^Threads/.test(m)) return "쓰레드에 올리다가 문제가 생겼습니다";
   if (/expired|session|OAuth|token/i.test(m)) return "인스타 열쇠가 만료됐거나 GitHub 비밀 칸에 없습니다";
   if (/limit|rate|throttl/i.test(m)) return "인스타 게시 한도에 걸렸습니다";
   if (/image|media|aspect|format|container/i.test(m)) return "인스타가 사진을 받지 않았습니다";
@@ -73,7 +108,9 @@ function friendly(m) {
 const now = Date.now();
 fs.mkdirSync("results", { recursive: true });
 const results = fs.readdirSync("results").filter((f) => f.endsWith(".json")).map((f) => JSON.parse(fs.readFileSync(path.join("results", f), "utf8")));
-let postedToday = results.filter((r) => r.status === "published" && kstDay(Date.parse(r.at)) === kstDay(now)).length;
+const today = (pf) => results.filter((r) => r.status === "published" && (r.platform || "instagram") === pf && kstDay(Date.parse(r.at)) === kstDay(now)).length;
+let postedToday = today("instagram");
+let thPostedToday = today("threads");
 const queue = fs.existsSync("queue")
   ? fs.readdirSync("queue").filter((f) => f.endsWith(".json")).map((f) => ({ file: f, ...JSON.parse(fs.readFileSync(path.join("queue", f), "utf8")) }))
   : [];
@@ -85,7 +122,21 @@ for (const item of queue) {
   const due = Date.parse(item.due);
   if (due > now) continue;
   let result;
-  if (now - due > LATE_MS) result = { status: "missed", error: "정한 시각보다 12시간 넘게 늦어 올리지 않았습니다" };
+  const isTh = item.platform === "threads";
+  if (isTh) {
+    if (now - due > LATE_MS) result = { status: "missed", error: "정한 시각보다 12시간 넘게 늦어 올리지 않았습니다" };
+    else if (!item.practice && thPostedToday >= (item.dailyMax || 3)) continue;
+    else if (!TH_TOKEN) result = { status: "failed", error: "GitHub 비밀 칸(THREADS_ACCESS_TOKEN)에 쓰레드 열쇠가 없습니다" };
+    else {
+      try {
+        result = await publishThreads(item);
+        if (result.status === "published") thPostedToday++;
+      } catch (e) {
+        console.log("실패", item.id, e.message);
+        result = { status: "failed", error: friendly(e.message) };
+      }
+    }
+  } else if (now - due > LATE_MS) result = { status: "missed", error: "정한 시각보다 12시간 넘게 늦어 올리지 않았습니다" };
   else if (!item.practice && postedToday >= (item.dailyMax || 2)) continue; // 오늘 한도 — 다음 날 다시 본다
   else if (!TOKEN) result = { status: "failed", error: "GitHub 비밀 칸(IG_ACCESS_TOKEN)에 인스타 열쇠가 없습니다" };
   else {
@@ -97,7 +148,7 @@ for (const item of queue) {
       result = { status: "failed", error: friendly(e.message) };
     }
   }
-  fs.writeFileSync(path.join("results", `${item.id}.json`), JSON.stringify({ id: item.id, at: new Date().toISOString(), ...result }, null, 2));
+  fs.writeFileSync(path.join("results", `${item.id}.json`), JSON.stringify({ id: item.id, platform: isTh ? "threads" : "instagram", at: new Date().toISOString(), ...result }, null, 2));
   fs.rmSync(path.join("queue", item.file), { force: true });
   fs.rmSync(path.join("queue-media", item.id), { recursive: true, force: true });
   console.log(item.id, result.status, result.permalink || result.error || "");
