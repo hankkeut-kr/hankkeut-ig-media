@@ -1,0 +1,7 @@
+{
+  "id": "th-2026-11-17-1930-45e138c7",
+  "platform": "threads",
+  "at": "2026-11-17T10:35:44.289Z",
+  "status": "failed",
+  "error": "GitHub 비밀 칸(THREADS_ACCESS_TOKEN)에 쓰레드 열쇠가 없습니다"
+}
