@@ -108,8 +108,11 @@ function friendly(m) {
 const now = Date.now();
 fs.mkdirSync("results", { recursive: true });
 const results = fs.readdirSync("results").filter((f) => f.endsWith(".json")).map((f) => JSON.parse(fs.readFileSync(path.join("results", f), "utf8")));
-const today = (pf) => results.filter((r) => r.status === "published" && (r.platform || "instagram") === pf && kstDay(Date.parse(r.at)) === kstDay(now)).length;
-let postedToday = today("instagram");
+// 하루 올린 개수는 계정마다 따로 센다(한끗 노트와 다른 계정이 서로 한도를 잡아먹지 않게). 예전 결과에 계정 번호가 없으면 한끗 노트로 본다.
+const MAIN_IG = "17841431262390403";
+const today = (pf, ig) => results.filter((r) => r.status === "published" && (r.platform || "instagram") === pf && (pf !== "instagram" || (r.igUserId || MAIN_IG) === ig) && kstDay(Date.parse(r.at)) === kstDay(now)).length;
+const postedToday = {};
+const igCount = (ig) => (postedToday[ig] ??= today("instagram", ig));
 let thPostedToday = today("threads");
 const queue = fs.existsSync("queue")
   ? fs.readdirSync("queue").filter((f) => f.endsWith(".json")).map((f) => ({ file: f, ...JSON.parse(fs.readFileSync(path.join("queue", f), "utf8")) }))
@@ -137,18 +140,18 @@ for (const item of queue) {
       }
     }
   } else if (now - due > LATE_MS) result = { status: "missed", error: "정한 시각보다 12시간 넘게 늦어 올리지 않았습니다" };
-  else if (!item.practice && postedToday >= (item.dailyMax || 2)) continue; // 오늘 한도 — 다음 날 다시 본다
+  else if (!item.practice && igCount(item.igUserId || MAIN_IG) >= (item.dailyMax || 2)) continue; // 오늘 한도 — 다음 날 다시 본다
   else if (!TOKEN) result = { status: "failed", error: "GitHub 비밀 칸(IG_ACCESS_TOKEN)에 인스타 열쇠가 없습니다" };
   else {
     try {
       result = await publish(item);
-      if (result.status === "published") postedToday++;
+      if (result.status === "published") postedToday[item.igUserId || MAIN_IG] = igCount(item.igUserId || MAIN_IG) + 1;
     } catch (e) {
       console.log("실패", item.id, e.message);
       result = { status: "failed", error: friendly(e.message) };
     }
   }
-  fs.writeFileSync(path.join("results", `${item.id}.json`), JSON.stringify({ id: item.id, platform: isTh ? "threads" : "instagram", at: new Date().toISOString(), ...result }, null, 2));
+  fs.writeFileSync(path.join("results", `${item.id}.json`), JSON.stringify({ id: item.id, platform: isTh ? "threads" : "instagram", igUserId: isTh ? undefined : item.igUserId, at: new Date().toISOString(), ...result }, null, 2));
   fs.rmSync(path.join("queue", item.file), { force: true });
   fs.rmSync(path.join("queue-media", item.id), { recursive: true, force: true });
   console.log(item.id, result.status, result.permalink || result.error || "");
