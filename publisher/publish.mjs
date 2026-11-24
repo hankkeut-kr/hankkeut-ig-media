@@ -37,7 +37,34 @@ async function waitFinished(id) {
   throw new Error("container timeout");
 }
 
+// 릴스: 저장소에 받아 둔 영상 파일을 인스타에 직접 보낸다(이어 올리기 방식)
+async function publishReel(item) {
+  const data = fs.readFileSync(item.video);
+  const c = await call("POST", `${item.igUserId}/media`, { media_type: "REELS", upload_type: "resumable", caption: item.caption, share_to_feed: "true", thumb_offset: "1500" });
+  const up = await fetch(c.uri || `https://rupload.facebook.com/ig-api-upload/${c.id}`, {
+    method: "POST",
+    headers: { Authorization: `OAuth ${TOKEN}`, offset: "0", file_size: String(data.length), "Content-Type": "application/octet-stream" },
+    body: data,
+  });
+  if (!up.ok) throw new Error(`IG upload ${up.status}: video ${(await up.text().catch(() => "")).slice(0, 200)}`);
+  for (let i = 0; i < 100; i++) {
+    const r = await call("GET", c.id, { fields: "status_code,status" });
+    if (r.status_code === "FINISHED") break;
+    if (r.status_code === "ERROR" || r.status_code === "EXPIRED") throw new Error(`video container ${r.status_code} ${r.status || ""}`);
+    if (i === 99) throw new Error("video container timeout");
+    await sleep(3000);
+  }
+  if (item.practice) return { status: "practice-ok" };
+  const pub = await call("POST", `${item.igUserId}/media_publish`, { creation_id: c.id });
+  let permalink;
+  try {
+    permalink = (await call("GET", pub.id, { fields: "permalink" })).permalink;
+  } catch {}
+  return { status: "published", mediaId: pub.id, permalink };
+}
+
 async function publish(item) {
+  if (item.type === "reel") return publishReel(item);
   const children = [];
   for (const [i, img] of item.images.entries()) {
     const params = { image_url: raw(img), is_carousel_item: "true" };
@@ -101,6 +128,7 @@ function friendly(m) {
   if (/^Threads/.test(m)) return "쓰레드에 올리다가 문제가 생겼습니다";
   if (/expired|session|OAuth|token/i.test(m)) return "인스타 열쇠가 만료됐거나 GitHub 비밀 칸에 없습니다";
   if (/limit|rate|throttl/i.test(m)) return "인스타 게시 한도에 걸렸습니다";
+  if (/video/i.test(m)) return "인스타가 릴스 영상을 받지 않았습니다";
   if (/image|media|aspect|format|container/i.test(m)) return "인스타가 사진을 받지 않았습니다";
   return "올리다가 문제가 생겼습니다";
 }
