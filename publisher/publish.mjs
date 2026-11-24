@@ -40,7 +40,7 @@ async function waitFinished(id) {
 // 릴스: 저장소에 받아 둔 영상 파일을 인스타에 직접 보낸다(이어 올리기 방식)
 async function publishReel(item) {
   const data = fs.readFileSync(item.video);
-  const c = await call("POST", `${item.igUserId}/media`, { media_type: "REELS", upload_type: "resumable", caption: item.caption, share_to_feed: "true", thumb_offset: "1500" });
+  const c = await call("POST", `${item.igUserId}/media`, { media_type: "REELS", upload_type: "resumable", caption: item.caption, share_to_feed: item.shareToFeed === false ? "false" : "true", thumb_offset: "1500" });
   const up = await fetch(c.uri || `https://rupload.facebook.com/ig-api-upload/${c.id}`, {
     method: "POST",
     headers: { Authorization: `OAuth ${TOKEN}`, offset: "0", file_size: String(data.length), "Content-Type": "application/octet-stream" },
